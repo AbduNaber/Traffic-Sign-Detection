@@ -9,7 +9,8 @@ __pycache__/
 *.avi
 *.MTS
 source/*.png
-
+*.png
+*.out
 # Distribution / packaging
 .Python
 env/

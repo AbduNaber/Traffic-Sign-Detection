@@ -1,6 +1,7 @@
 import cv2
+
 import numpy as np
-import matplotlib.pyplot as plt
+
 from math import sqrt
 from skimage.feature import blob_dog, blob_log, blob_doh
 import imutils
@@ -22,16 +23,17 @@ SIGNS = ["ERROR",
 
 # Clean all previous file
 def clean_images():
-	file_list = os.listdir('./')
-	for file_name in file_list:
-		if '.png' in file_name:
-			os.remove(file_name)
+    file_list = os.listdir('./')
+    for file_name in file_list:
+        if '.png' in file_name:
+            print("Remove file: {}".format(file_name))
+            os.remove(file_name)
 
 
 ### Preprocess image
 def constrastLimit(image):
     img_hist_equalized = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-    channels = cv2.split(img_hist_equalized)
+    channels = list(cv2.split(img_hist_equalized))
     channels[0] = cv2.equalizeHist(channels[0])
     img_hist_equalized = cv2.merge(channels)
     img_hist_equalized = cv2.cvtColor(img_hist_equalized, cv2.COLOR_YCrCb2BGR)
@@ -69,17 +71,31 @@ def removeSmallComponents(image, threshold):
     return img2
 
 def findContour(image):
-    #find contours in the thresholded image
-    cnts = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE    )
-    cnts = cnts[0] if imutils.is_cv2() else cnts[1]
+    # Find contours in the thresholded image
+    contours_result = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    
+    # Handle different OpenCV versions
+    if len(contours_result) == 3:
+        # OpenCV 4.x returns (image, contours, hierarchy)
+        cnts = contours_result[1]
+    else:
+        # OpenCV 3.x returns (contours, hierarchy)  
+        cnts = contours_result[0]
+    
+    # Debug: print info about contours
+    print(f"Found {len(cnts)} contours")
+    if len(cnts) > 0:
+        print(f"First contour shape: {cnts[0].shape}")
+    
     return cnts
-
 def contourIsSign(perimeter, centroid, threshold):
+    print(f"Evaluating contour with {len(perimeter)} points")
     #  perimeter, centroid, threshold
     # # Compute signature of contour
     result=[]
     for p in perimeter:
-        p = p[0]
+        #p = p[0]
+        print( f"Point: {p}, Centroid: {centroid}" )
         distance = sqrt((p[0] - centroid[0])**2 + (p[1] - centroid[1])**2)
         result.append(distance)
     max_value = max(result)
@@ -87,9 +103,13 @@ def contourIsSign(perimeter, centroid, threshold):
     # Check signature of contour.
     temp = sum((1 - s) for s in signature)
     temp = temp / len(signature)
+
+    
     if temp < threshold: # is  the sign
+        print(f"Contour accepted with similitary {temp}")
         return True, max_value + 2
     else:                 # is not the sign
+        print(f"Contour rejected with similitary {temp}")
         return False, max_value + 2
 
 #crop sign 
@@ -115,29 +135,104 @@ def cropSign(image, coordinate):
 
 
 def findLargestSign(image, contours, threshold, distance_theshold):
+    
     max_distance = 0
     coordinate = None
     sign = None
+    
     for c in contours:
-        M = cv2.moments(c)
+        # Skip if contour is None or empty
+        if c is None or len(c) == 0:
+            continue
+        
+        print(f"Original c shape: {c.shape}, c ndim: {c.ndim}, c length: {len(c)}")
+        
+        # Handle 1D array - this is your case!
+        if c.ndim == 1:
+            # Check if length is even (must have pairs of coordinates)
+            if len(c) % 2 != 0:
+                print(f"Odd length 1D array, skipping")
+                continue
+            # Reshape to (n_points, 2)
+            c = c.reshape(-1, 2)
+            print(f"Reshaped 1D to: {c.shape}")
+        
+        # Handle 2D arrays
+        elif c.ndim == 2:
+            if c.shape[1] == 4:
+                # Wrong format - take only first 2 columns
+                c = c[:, :2]
+            elif c.shape[1] == 2:
+                # Already correct format
+                pass
+            else:
+                print(f"Unexpected 2D shape: {c.shape}, skipping")
+                continue
+        
+        # Handle 3D arrays (standard OpenCV format)
+        elif c.ndim == 3 and c.shape[1] == 1 and c.shape[2] == 2:
+            # Flatten to (n_points, 2)
+            c = c.reshape(-1, 2)
+        else:
+            print(f"Unexpected contour shape: {c.shape}, skipping")
+            continue
+        
+        # Skip contours with too few points
+        if c.shape[0] < 3:
+            print(f"Contour has only {c.shape[0]} points, need at least 3, skipping")
+            continue
+        
+        c = c.astype(np.int32)
+        
+        print(f"Final c shape for processing: {c.shape}")
+        
+        # For drawing and moments, need (n, 1, 2) format
+        c_for_drawing = c.reshape(-1, 1, 2)
+        
+        # Calculate moments
+        try:
+            M = cv2.moments(c_for_drawing)
+        except Exception as e:
+            print(f"Error calculating moments: {e}")
+            continue
+            
+        print(f"Contour Moments: m00={M['m00']}, m10={M['m10']}, m01={M['m01']}")
+        
         if M["m00"] == 0:
             continue
+        
         cX = int(M["m10"] / M["m00"])
         cY = int(M["m01"] / M["m00"])
+
+        # Debug visualization
+        try:
+            debug_image = image.copy() 
+            cv2.drawContours(debug_image, [c_for_drawing], -1, (0, 255, 0), 2)
+            cv2.circle(debug_image, (cX, cY), 7, (0, 0, 255), -1)
+            cv2.imshow("Currently Evaluating Contour", debug_image)
+            cv2.waitKey(1)
+        except Exception as e:
+            print(f"Error drawing contour: {e}")
+            continue
+
+        # Pass the 2D array (n, 2) to contourIsSign
+        print(f"Passing to contourIsSign: shape {c.shape}, first point: {c[0]}")
         is_sign, distance = contourIsSign(c, [cX, cY], 1-threshold)
+        
         if is_sign and distance > max_distance and distance > distance_theshold:
             max_distance = distance
-            coordinate = np.reshape(c, [-1,2])
+            coordinate = c
             left, top = np.amin(coordinate, axis=0)
-            right, bottom = np.amax(coordinate, axis = 0)
-            coordinate = [(left-2,top-2),(right+3,bottom+1)]
-            sign = cropSign(image,coordinate)
+            right, bottom = np.amax(coordinate, axis=0)
+            coordinate = [(left-2, top-2), (right+3, bottom+1)]
+            sign = cropSign(image, coordinate)
+    
     return sign, coordinate
-
 
 def findSigns(image, contours, threshold, distance_theshold):
     signs = []
     coordinates = []
+
     for c in contours:
         # compute the center of the contour
         M = cv2.moments(c)
@@ -157,15 +252,17 @@ def findSigns(image, contours, threshold, distance_theshold):
 
 def localization(image, min_size_components, similitary_contour_with_circle, model, count, current_sign_type):
     original_image = image.copy()
+
     binary_image = preprocess_image(image)
 
     binary_image = removeSmallComponents(binary_image, min_size_components)
 
     binary_image = cv2.bitwise_and(binary_image,binary_image, mask=remove_other_color(image))
 
-    #binary_image = remove_line(binary_image)
+    binary_image = remove_line(binary_image)
 
     cv2.imshow('BINARY IMAGE', binary_image)
+
     contours = findContour(binary_image)
     #signs, coordinates = findSigns(image, contours, similitary_contour_with_circle, 15)
     sign, coordinate = findLargestSign(original_image, contours, similitary_contour_with_circle, 15)
@@ -229,7 +326,9 @@ def main(args):
     clean_images()
     #Training phase
     model = training()
+    print ("Model trained")
 
+    print ("Starting video capture")
     vidcap = cv2.VideoCapture(args.file_name)
 
     fps = vidcap.get(cv2.CAP_PROP_FPS)
@@ -243,7 +342,7 @@ def main(args):
     # initialize the termination criteria for cam shift, indicating
     # a maximum of ten iterations or movement by a least one pixel
     # along with the bounding box of the ROI
-    termination = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 1)
+    termination = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 1)
     roiBox = None
     roiHist = None
 
@@ -309,7 +408,7 @@ def main(args):
             # apply cam shift to the back projection, convert the
             # points to a bounding box, and then draw them
             (r, roiBox) = cv2.CamShift(backProj, roiBox, termination)
-            pts = np.int0(cv2.boxPoints(r))
+            pts = np.intp(cv2.boxPoints(r))
             s = pts.sum(axis = 1)
             tl = pts[np.argmin(s)]
             br = pts[np.argmax(s)]
@@ -341,13 +440,20 @@ def main(args):
         if current_sign:
             sign_count += 1
             coordinates.append(position)
-
+        cv2.imshow('preprocessed', preprocess_image(frame))
+        #cv2.imshow('color_mask', remove_other_color(image))
         cv2.imshow('Result', image)
         count = count + 1
         #Write to video
         out.write(image)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+
+        key = cv2.waitKey(0) & 0xFF  
+        if key == 27:  # ESC
+            print("Terminated by user.")
             break
+        elif key == ord('n'):
+            print("Next frame →")
+            continue
     file.write("{}".format(sign_count))
     for pos in coordinates:
         file.write("\n{} {} {} {} {} {}".format(pos[0],pos[1],pos[2],pos[3],pos[4], pos[5]))
